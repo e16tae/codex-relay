@@ -5,9 +5,11 @@ A small, self-hosted gateway that exposes a **ChatGPT/Codex subscription** as an
 can use it with nothing more than a base URL and an API key.
 
 > **Status: early development.** Chat completions (text, images, JSON output,
+> tool calls,
 > streaming), models, ChatGPT sign-in, token refresh,
 > client API keys and
-> health checks work. Tool calls and image generation are not implemented yet.
+> health checks work. Image generation is not implemented yet. Verified with the
+> official OpenAI Python SDK.
 
 > **Disclaimer.** This is an unofficial project and is not affiliated with OpenAI.
 > It talks to the same backend the Codex CLI uses with your ChatGPT sign-in.
