@@ -36,6 +36,10 @@ pub struct ServeArgs {
     /// Reasoning effort used when a request does not set `reasoning_effort`.
     #[arg(long, env = "CODEX_RELAY_DEFAULT_REASONING_EFFORT")]
     pub default_reasoning_effort: Option<String>,
+
+    /// Backend image model; every image request uses it regardless of the requested model.
+    #[arg(long, env = "CODEX_RELAY_IMAGE_MODEL", default_value = "gpt-image-2")]
+    pub image_model: String,
 }
 
 #[derive(Args)]

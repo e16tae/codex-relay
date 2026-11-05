@@ -110,6 +110,20 @@ impl CodexBackend {
             .json(body);
         send(request).await
     }
+
+    /// Generates one image. The backend ignores `n`, `size` and `quality` and picks
+    /// the size itself; it honours `background`.
+    pub async fn generate_image(&self, body: &Value) -> Result<Value, UpstreamError> {
+        let request = self
+            .request(Method::POST, "/images/generations")
+            .await?
+            .json(body);
+        send(request)
+            .await?
+            .json()
+            .await
+            .map_err(|err| UpstreamError::Network(format!("invalid image response: {err}")))
+    }
 }
 
 async fn send(request: RequestBuilder) -> Result<reqwest::Response, UpstreamError> {

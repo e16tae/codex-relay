@@ -8,8 +8,8 @@ can use it with nothing more than a base URL and an API key.
 > tool calls,
 > streaming), models, ChatGPT sign-in, token refresh,
 > client API keys and
-> health checks work. Image generation is not implemented yet. Verified with the
-> official OpenAI Python SDK.
+> health checks and image generation work. Verified with the official OpenAI
+> Python SDK.
 
 > **Disclaimer.** This is an unofficial project and is not affiliated with OpenAI.
 > It talks to the same backend the Codex CLI uses with your ChatGPT sign-in.
@@ -20,7 +20,10 @@ can use it with nothing more than a base URL and an API key.
 
 - `POST /v1/chat/completions`: streaming and non-streaming, with tool calls
 - `GET /v1/models`
-- `POST /v1/images/generations`, using Codex's built-in image generation
+- `POST /v1/images/generations` via the Codex image backend (`gpt-image-2`).
+  The backend picks the image size itself and ignores `size`/`quality`;
+  `background: transparent` works. `n > 1` runs parallel calls (max 4).
+  Any requested image model name is mapped to `CODEX_RELAY_IMAGE_MODEL`.
 - Automatic token refresh plus a daily keepalive. If the sign-in is revoked, the
   relay stops serving and sends an alert. It never falls back silently.
 - Fixes for client quirks (for example `"name": null` in tool messages from Nextcloud)
@@ -52,6 +55,8 @@ Services on the same Docker network then use:
 | `CODEX_RELAY_DATA_DIR`       | `/data`          | ChatGPT credentials and state |
 | `CODEX_RELAY_API_KEYS`       | —                | Comma-separated `name:key` pairs |
 | `CODEX_RELAY_API_KEYS_FILE`  | —                | File with one `name:key` per line (`#` comments allowed) |
+| `CODEX_RELAY_DEFAULT_REASONING_EFFORT` | — | Effort when a request sets none |
+| `CODEX_RELAY_IMAGE_MODEL`    | `gpt-image-2`    | Backend image model |
 | `RUST_LOG`                   | `info`           | Log filter |
 
 Keys must be at least 16 characters.

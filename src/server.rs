@@ -14,7 +14,7 @@ use crate::codex::backend::CodexBackend;
 use crate::codex::tokens::TokenManager;
 use crate::config::ServeArgs;
 use crate::openai::error::ApiError;
-use crate::openai::{chat, models};
+use crate::openai::{chat, images, models};
 
 /// Request bodies can carry base64 images.
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -25,6 +25,7 @@ pub struct AppState {
     tokens: Arc<TokenManager>,
     pub backend: Arc<CodexBackend>,
     pub default_effort: Option<String>,
+    pub image_model: String,
 }
 
 /// Name of the authenticated client, attached to each `/v1` request.
@@ -45,12 +46,13 @@ pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
         tokens,
         backend,
         default_effort: args.default_reasoning_effort.clone(),
+        image_model: args.image_model.clone(),
     };
 
     let v1 = Router::new()
         .route("/models", get(models::list))
         .route("/chat/completions", post(chat::completions))
-        .route("/images/generations", post(not_implemented))
+        .route("/images/generations", post(images::generations))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -107,15 +109,6 @@ async fn healthz(State(state): State<AppState>) -> Response {
     };
     let body = json!({ "status": status, "version": env!("CARGO_PKG_VERSION"), "chatgpt": token });
     (code, Json(body)).into_response()
-}
-
-async fn not_implemented() -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "invalid_request_error",
-        "not_implemented",
-        "This endpoint is not implemented yet",
-    )
 }
 
 async fn shutdown_signal() {
