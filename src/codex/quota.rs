@@ -140,8 +140,7 @@ impl QuotaTracker {
             if let Some(level) = WARN_LEVELS
                 .iter()
                 .copied()
-                .filter(|l| used >= *l && *l > inner.warned)
-                .next_back()
+                .rfind(|l| used >= *l && *l > inner.warned)
             {
                 tracing::warn!(
                     window = name,
