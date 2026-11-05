@@ -12,6 +12,8 @@ use super::quota::{QuotaTracker, reset_hint};
 use super::tokens::{TokenError, TokenManager};
 
 const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
+/// Pauses before each retry of a gateway error; its length is the number of retries.
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1500)];
 
 pub struct CodexBackend {
     http: reqwest::Client,
@@ -130,8 +132,7 @@ impl CodexBackend {
 
     /// Sends a request, records the usage-limit headers, and turns failures into errors.
     async fn send(&self, request: RequestBuilder) -> Result<reqwest::Response, UpstreamError> {
-        let response = request
-            .send()
+        let response = send_with_retries(request, &RETRY_DELAYS)
             .await
             .map_err(|err| UpstreamError::Network(err.to_string()))?;
         self.quota.observe(response.headers());
@@ -152,6 +153,41 @@ impl CodexBackend {
             message,
             code,
         })
+    }
+}
+
+/// Gateway errors in front of the backend. They arrive before any output, so a
+/// retry can't duplicate or cut off a streamed answer.
+fn retryable(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+/// Sends a request, retrying gateway errors and failed connections once per delay.
+/// Returns the last response, which can still carry an error status.
+async fn send_with_retries(
+    request: RequestBuilder,
+    delays: &[Duration],
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut delays = delays.iter();
+    loop {
+        // JSON bodies can always be cloned; anything else is sent once.
+        let Some(attempt) = request.try_clone() else {
+            return request.send().await;
+        };
+        let outcome = attempt.send().await;
+        let failure = match &outcome {
+            Ok(response) if retryable(response.status()) => response.status().to_string(),
+            Err(err) if err.is_connect() => err.to_string(),
+            _ => return outcome,
+        };
+        let Some(delay) = delays.next() else {
+            return outcome;
+        };
+        tracing::warn!(%failure, "upstream request failed; retrying in {delay:?}");
+        tokio::time::sleep(*delay).await;
     }
 }
 
@@ -186,6 +222,56 @@ fn parse_error_body(text: &str) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Serves the given statuses in order (the last one repeats) and counts hits.
+    async fn fake_upstream(statuses: &'static [u16]) -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                let code = statuses[n.min(statuses.len() - 1)];
+                async move { axum::http::StatusCode::from_u16(code).unwrap() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, hits)
+    }
+
+    async fn send_to(url: &str) -> StatusCode {
+        let request = reqwest::Client::new()
+            .post(url)
+            .json(&serde_json::json!({}));
+        send_with_retries(request, &[Duration::ZERO; 2])
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn retries_gateway_errors() {
+        let (url, hits) = fake_upstream(&[502, 504, 200]).await;
+        assert_eq!(send_to(&url).await, StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_last_retry() {
+        let (url, hits) = fake_upstream(&[503]).await;
+        assert_eq!(send_to(&url).await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_other_errors() {
+        let (url, hits) = fake_upstream(&[429]).await;
+        assert_eq!(send_to(&url).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn parses_backend_errors() {

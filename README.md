@@ -30,6 +30,9 @@ Single static Rust binary in a distroless image. It idles at about 3 MiB of memo
 - **Usage limits.** The backend reports the subscription limits in every
   response. The relay shows them in `/healthz` and `codex-relay status`, logs a
   warning at 80/90/95 %, and adds the reset time to rate-limit errors.
+- **Gateway hiccups retried.** `502`/`503`/`504` from the backend and failed
+  connections are retried twice (after 0.5 s and 1.5 s). They come before any
+  output, so a streamed answer is never duplicated. Other errors pass through.
 - **Client quirks absorbed.** `system` messages are sent as `developer`.
   Unsupported sampling parameters (`temperature`, `top_p`, ...) are dropped.
   `null` fields (for example Nextcloud's `"name": null` in tool messages) are ignored.
