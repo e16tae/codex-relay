@@ -1,0 +1,39 @@
+# Copy to compose.yaml and adjust.
+#
+# Other containers on the same Docker network reach the relay at
+#   http://codex-relay:8080/v1   with   Authorization: Bearer <key>
+#
+# First run:
+#   1. Create ./api-keys with one `name:key` pair per line, e.g.
+#        nextcloud:<output of `openssl rand -hex 32`>
+#      The container runs as uid 65532, so make the file readable:
+#        chmod 644 api-keys     (or: sudo chown 65532 api-keys && chmod 600 api-keys)
+#   2. Sign in to ChatGPT:   docker compose run --rm codex-relay login
+#   3. Start:                docker compose up -d
+
+services:
+  codex-relay:
+    image: ghcr.io/e16tae/codex-relay:latest
+    container_name: codex-relay
+    restart: unless-stopped
+    environment:
+      CODEX_RELAY_API_KEYS_FILE: /run/secrets/api-keys
+      RUST_LOG: info
+    volumes:
+      - codex-relay-data:/data
+      - ./api-keys:/run/secrets/api-keys:ro
+    networks:
+      - shared
+    # Uncomment to reach the relay from the host (keep it on loopback):
+    # ports:
+    #   - "127.0.0.1:8080:8080"
+
+volumes:
+  codex-relay-data:
+
+networks:
+  shared:
+    # Join the network of the service that will call the relay.
+    # For Nextcloud AIO use: name: nextcloud-aio
+    name: codex-relay
+    external: false

@@ -1,0 +1,7 @@
+/target/
+
+# Local runtime state and secrets — never commit these.
+/data/
+api-keys
+auth.json
+.env
