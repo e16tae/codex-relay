@@ -1,4 +1,5 @@
-mod auth;
+mod api_keys;
+mod codex;
 mod config;
 mod server;
 
@@ -40,7 +41,7 @@ async fn main() -> ExitCode {
 
     let result = match Cli::parse().command {
         Command::Serve(args) => server::run(args).await,
-        Command::Login(_args) => Err(anyhow::anyhow!("login is not implemented yet")),
+        Command::Login(args) => codex::login::run(&args.data_dir).await,
         Command::Healthcheck { url } => healthcheck(&url).await,
     };
 

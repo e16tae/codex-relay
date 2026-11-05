@@ -9,12 +9,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use crate::auth::ApiKeys;
+use crate::api_keys::ApiKeys;
+use crate::codex::tokens::TokenManager;
 use crate::config::ServeArgs;
 
 #[derive(Clone)]
 struct AppState {
     api_keys: Arc<ApiKeys>,
+    tokens: Arc<TokenManager>,
 }
 
 /// Name of the authenticated client, attached to each `/v1` request.
@@ -24,8 +26,11 @@ pub struct ClientName(pub String);
 
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     let api_keys = ApiKeys::load(args.api_keys.as_deref(), args.api_keys_file.as_deref())?;
+    let tokens = Arc::new(TokenManager::new(&args.data_dir)?);
+    tokens.spawn_maintenance();
     let state = AppState {
         api_keys: Arc::new(api_keys),
+        tokens,
     };
 
     let v1 = Router::new()
@@ -74,8 +79,17 @@ async fn require_api_key(State(state): State<AppState>, mut req: Request, next: 
     }
 }
 
-async fn healthz() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
+/// 200 when the relay can serve requests, 503 when it needs a (new) ChatGPT sign-in.
+async fn healthz(State(state): State<AppState>) -> Response {
+    let (healthy, token) = state.tokens.status();
+    let status = if healthy { "ok" } else { "unavailable" };
+    let code = if healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let body = json!({ "status": status, "version": env!("CARGO_PKG_VERSION"), "chatgpt": token });
+    (code, Json(body)).into_response()
 }
 
 async fn not_implemented() -> Response {
