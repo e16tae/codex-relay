@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use super::quota::{QuotaTracker, reset_hint};
 use super::tokens::{TokenError, TokenManager};
 
 const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
@@ -18,6 +19,7 @@ pub struct CodexBackend {
     client_version: String,
     tokens: Arc<TokenManager>,
     models: Mutex<Option<(Instant, Arc<Vec<UpstreamModel>>)>>,
+    pub quota: QuotaTracker,
 }
 
 #[derive(Clone, Deserialize)]
@@ -64,6 +66,7 @@ impl CodexBackend {
             client_version,
             tokens,
             models: Mutex::new(None),
+            quota: QuotaTracker::default(),
         })
     }
 
@@ -91,7 +94,7 @@ impl CodexBackend {
             models: Vec<UpstreamModel>,
         }
         let path = format!("/models?client_version={}", self.client_version);
-        let response = send(self.request(Method::GET, &path).await?).await?;
+        let response = self.send(self.request(Method::GET, &path).await?).await?;
         let parsed: ModelsResponse = response
             .json()
             .await
@@ -108,7 +111,7 @@ impl CodexBackend {
             .await?
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .json(body);
-        send(request).await
+        self.send(request).await
     }
 
     /// Generates one image. The backend ignores `n`, `size` and `quality` and picks
@@ -118,30 +121,38 @@ impl CodexBackend {
             .request(Method::POST, "/images/generations")
             .await?
             .json(body);
-        send(request)
+        self.send(request)
             .await?
             .json()
             .await
             .map_err(|err| UpstreamError::Network(format!("invalid image response: {err}")))
     }
-}
 
-async fn send(request: RequestBuilder) -> Result<reqwest::Response, UpstreamError> {
-    let response = request
-        .send()
-        .await
-        .map_err(|err| UpstreamError::Network(err.to_string()))?;
-    if response.status().is_success() {
-        return Ok(response);
+    /// Sends a request, records the usage-limit headers, and turns failures into errors.
+    async fn send(&self, request: RequestBuilder) -> Result<reqwest::Response, UpstreamError> {
+        let response = request
+            .send()
+            .await
+            .map_err(|err| UpstreamError::Network(err.to_string()))?;
+        self.quota.observe(response.headers());
+        if response.status().is_success() {
+            return Ok(response);
+        }
+        let status = response.status();
+        let hint = (status == StatusCode::TOO_MANY_REQUESTS)
+            .then(|| reset_hint(response.headers()))
+            .flatten();
+        let text = response.text().await.unwrap_or_default();
+        let (mut message, code) = parse_error_body(&text);
+        if let Some(hint) = hint {
+            message = format!("{message} ({hint})");
+        }
+        Err(UpstreamError::Http {
+            status,
+            message,
+            code,
+        })
     }
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    let (message, code) = parse_error_body(&text);
-    Err(UpstreamError::Http {
-        status,
-        message,
-        code,
-    })
 }
 
 /// Understands `{"detail": "..."}` and `{"error": {"message", "code"|"type"}}`.

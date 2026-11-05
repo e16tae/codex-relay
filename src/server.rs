@@ -107,7 +107,12 @@ async fn healthz(State(state): State<AppState>) -> Response {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    let body = json!({ "status": status, "version": env!("CARGO_PKG_VERSION"), "chatgpt": token });
+    let body = json!({
+        "status": status,
+        "version": env!("CARGO_PKG_VERSION"),
+        "chatgpt": token,
+        "usage_limits": state.backend.quota.status(),
+    });
     (code, Json(body)).into_response()
 }
 

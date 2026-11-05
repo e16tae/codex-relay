@@ -10,10 +10,11 @@
 #        chmod 644 api-keys     (or: sudo chown 65532 api-keys && chmod 600 api-keys)
 #   2. Sign in to ChatGPT:   docker compose run --rm codex-relay login
 #   3. Start:                docker compose up -d
+#   4. Check:                docker exec codex-relay codex-relay status
 
 services:
   codex-relay:
-    image: ghcr.io/e16tae/codex-relay:latest
+    image: ghcr.io/e16tae/codex-relay:0.1
     container_name: codex-relay
     restart: unless-stopped
     environment:

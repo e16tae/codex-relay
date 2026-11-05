@@ -5,6 +5,7 @@
 pub mod backend;
 pub mod credentials;
 pub mod login;
+pub mod quota;
 pub mod tokens;
 
 use std::time::Duration;
