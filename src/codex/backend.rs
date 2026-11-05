@@ -12,8 +12,9 @@ use super::quota::{QuotaTracker, reset_hint};
 use super::tokens::{TokenError, TokenManager};
 
 const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
-/// Pauses before each retry of a gateway error; its length is the number of retries.
-const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1500)];
+/// Same policy as the Codex CLI: up to 4 retries, 200 ms doubling each time.
+const MAX_RETRIES: u32 = 4;
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
 
 pub struct CodexBackend {
     http: reqwest::Client,
@@ -132,7 +133,7 @@ impl CodexBackend {
 
     /// Sends a request, records the usage-limit headers, and turns failures into errors.
     async fn send(&self, request: RequestBuilder) -> Result<reqwest::Response, UpstreamError> {
-        let response = send_with_retries(request, &RETRY_DELAYS)
+        let response = send_with_retries(request, MAX_RETRIES, RETRY_BASE_DELAY)
             .await
             .map_err(|err| UpstreamError::Network(err.to_string()))?;
         self.quota.observe(response.headers());
@@ -156,39 +157,51 @@ impl CodexBackend {
     }
 }
 
-/// Gateway errors in front of the backend. They arrive before any output, so a
-/// retry can't duplicate or cut off a streamed answer.
-fn retryable(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
-    )
+/// Server errors and transport failures are retried, like the Codex CLI does.
+/// They arrive before any output, so a retry can't duplicate a streamed answer.
+/// `429` is not retried: it means a usage limit, which a retry won't lift.
+fn retryable(outcome: &Result<reqwest::Response, reqwest::Error>) -> bool {
+    match outcome {
+        Ok(response) => response.status().is_server_error(),
+        Err(err) => err.is_connect() || err.is_timeout() || err.is_request(),
+    }
 }
 
-/// Sends a request, retrying gateway errors and failed connections once per delay.
-/// Returns the last response, which can still carry an error status.
+/// `base` doubled for each earlier retry, with ±10 % jitter so parallel
+/// requests don't retry in lockstep.
+fn backoff(base: Duration, retry: u32) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let jitter = 0.9 + f64::from(nanos % 1000) / 5000.0;
+    base.saturating_mul(1 << retry.min(16)).mul_f64(jitter)
+}
+
+/// Sends a request, retrying failures up to `max_retries` times.
+/// Returns the last outcome, which can still carry an error status.
 async fn send_with_retries(
     request: RequestBuilder,
-    delays: &[Duration],
+    max_retries: u32,
+    base_delay: Duration,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    let mut delays = delays.iter();
-    loop {
+    for retry in 0.. {
         // JSON bodies can always be cloned; anything else is sent once.
         let Some(attempt) = request.try_clone() else {
             return request.send().await;
         };
         let outcome = attempt.send().await;
-        let failure = match &outcome {
-            Ok(response) if retryable(response.status()) => response.status().to_string(),
-            Err(err) if err.is_connect() => err.to_string(),
-            _ => return outcome,
-        };
-        let Some(delay) = delays.next() else {
+        if retry >= max_retries || !retryable(&outcome) {
             return outcome;
+        }
+        let failure = match &outcome {
+            Ok(response) => response.status().to_string(),
+            Err(err) => err.to_string(),
         };
-        tracing::warn!(%failure, "upstream request failed; retrying in {delay:?}");
-        tokio::time::sleep(*delay).await;
+        let delay = backoff(base_delay, retry);
+        tracing::warn!(%failure, "upstream request failed; retry {} of {max_retries} in {delay:?}", retry + 1);
+        tokio::time::sleep(delay).await;
     }
+    unreachable!("the loop returns once retries run out")
 }
 
 /// Understands `{"detail": "..."}` and `{"error": {"message", "code"|"type"}}`.
@@ -246,7 +259,7 @@ mod tests {
         let request = reqwest::Client::new()
             .post(url)
             .json(&serde_json::json!({}));
-        send_with_retries(request, &[Duration::ZERO; 2])
+        send_with_retries(request, MAX_RETRIES, Duration::ZERO)
             .await
             .unwrap()
             .status()
@@ -254,16 +267,25 @@ mod tests {
 
     #[tokio::test]
     async fn retries_gateway_errors() {
-        let (url, hits) = fake_upstream(&[502, 504, 200]).await;
+        let (url, hits) = fake_upstream(&[502, 504, 500, 503, 200]).await;
         assert_eq!(send_to(&url).await, StatusCode::OK);
-        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        assert_eq!(hits.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]
     async fn gives_up_after_the_last_retry() {
         let (url, hits) = fake_upstream(&[503]).await;
         assert_eq!(send_to(&url).await, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        assert_eq!(hits.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn backs_off_exponentially() {
+        let base = Duration::from_millis(200);
+        for (retry, ms) in [(0, 200), (1, 400), (2, 800), (3, 1600)] {
+            let delay = backoff(base, retry).as_millis();
+            assert!(delay >= ms * 9 / 10 && delay <= ms * 11 / 10, "{delay}");
+        }
     }
 
     #[tokio::test]
