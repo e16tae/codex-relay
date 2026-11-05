@@ -4,9 +4,10 @@ A small, self-hosted gateway that exposes a **ChatGPT/Codex subscription** as an
 **OpenAI-compatible API**, so services like Nextcloud Assistant, n8n or Open WebUI
 can use it with nothing more than a base URL and an API key.
 
-> **Status: early development.** ChatGPT sign-in (device code), token refresh,
+> **Status: early development.** Chat completions (text, images, JSON output,
+> streaming), models, ChatGPT sign-in, token refresh,
 > client API keys and
-> health checks exist so far. The endpoints listed below are not implemented yet.
+> health checks work. Tool calls and image generation are not implemented yet.
 
 > **Disclaimer.** This is an unofficial project and is not affiliated with OpenAI.
 > It talks to the same backend the Codex CLI uses with your ChatGPT sign-in.

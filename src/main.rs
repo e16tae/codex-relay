@@ -1,7 +1,9 @@
 mod api_keys;
 mod codex;
 mod config;
+mod openai;
 mod server;
+mod sse;
 
 use std::process::ExitCode;
 use std::time::Duration;

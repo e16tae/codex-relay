@@ -20,6 +20,22 @@ pub struct ServeArgs {
     /// File with one `name:key` pair per line (Docker secrets friendly).
     #[arg(long, env = "CODEX_RELAY_API_KEYS_FILE")]
     pub api_keys_file: Option<PathBuf>,
+
+    /// Base URL of the ChatGPT Codex backend.
+    #[arg(
+        long,
+        env = "CODEX_RELAY_UPSTREAM_URL",
+        default_value = "https://chatgpt.com/backend-api/codex"
+    )]
+    pub upstream_url: String,
+
+    /// Codex CLI version reported to the backend (affects the model list).
+    #[arg(long, env = "CODEX_RELAY_CLIENT_VERSION", default_value = "0.166.0")]
+    pub client_version: String,
+
+    /// Reasoning effort used when a request does not set `reasoning_effort`.
+    #[arg(long, env = "CODEX_RELAY_DEFAULT_REASONING_EFFORT")]
+    pub default_reasoning_effort: Option<String>,
 }
 
 #[derive(Args)]

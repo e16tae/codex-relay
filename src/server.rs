@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -10,33 +10,48 @@ use axum::{Json, Router};
 use serde_json::json;
 
 use crate::api_keys::ApiKeys;
+use crate::codex::backend::CodexBackend;
 use crate::codex::tokens::TokenManager;
 use crate::config::ServeArgs;
+use crate::openai::error::ApiError;
+use crate::openai::{chat, models};
+
+/// Request bodies can carry base64 images.
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     api_keys: Arc<ApiKeys>,
     tokens: Arc<TokenManager>,
+    pub backend: Arc<CodexBackend>,
+    pub default_effort: Option<String>,
 }
 
 /// Name of the authenticated client, attached to each `/v1` request.
 #[derive(Clone)]
-#[allow(dead_code)] // read by handlers once they are implemented
 pub struct ClientName(pub String);
 
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
     let api_keys = ApiKeys::load(args.api_keys.as_deref(), args.api_keys_file.as_deref())?;
     let tokens = Arc::new(TokenManager::new(&args.data_dir)?);
     tokens.spawn_maintenance();
+    let backend = Arc::new(CodexBackend::new(
+        args.upstream_url.clone(),
+        args.client_version.clone(),
+        Arc::clone(&tokens),
+    )?);
     let state = AppState {
         api_keys: Arc::new(api_keys),
         tokens,
+        backend,
+        default_effort: args.default_reasoning_effort.clone(),
     };
 
     let v1 = Router::new()
-        .route("/models", get(not_implemented))
-        .route("/chat/completions", post(not_implemented))
+        .route("/models", get(models::list))
+        .route("/chat/completions", post(chat::completions))
         .route("/images/generations", post(not_implemented))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -71,11 +86,13 @@ async fn require_api_key(State(state): State<AppState>, mut req: Request, next: 
             req.extensions_mut().insert(ClientName(name));
             next.run(req).await
         }
-        None => openai_error(
+        None => ApiError::new(
             StatusCode::UNAUTHORIZED,
+            "invalid_request_error",
             "invalid_api_key",
             "Invalid or missing API key",
-        ),
+        )
+        .into_response(),
     }
 }
 
@@ -92,20 +109,13 @@ async fn healthz(State(state): State<AppState>) -> Response {
     (code, Json(body)).into_response()
 }
 
-async fn not_implemented() -> Response {
-    openai_error(
+async fn not_implemented() -> ApiError {
+    ApiError::new(
         StatusCode::NOT_IMPLEMENTED,
+        "invalid_request_error",
         "not_implemented",
         "This endpoint is not implemented yet",
     )
-}
-
-/// Error body in the shape OpenAI clients expect.
-pub fn openai_error(status: StatusCode, code: &str, message: &str) -> Response {
-    let body = json!({
-        "error": { "message": message, "type": "invalid_request_error", "code": code }
-    });
-    (status, Json(body)).into_response()
 }
 
 async fn shutdown_signal() {
